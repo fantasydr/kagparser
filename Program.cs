@@ -203,11 +203,10 @@ namespace kagparser
             if (_tagname.StartsWith("@"))
                 _tagname = _tagname.Substring(1);
 
-            cmd["tagname"] = _tagname;
-
-            if (line == "")
+            if (line == "") // consume the line
                 line = null;
 
+            cmd["tagname"] = _tagname;
             return cmd;
         }
 
@@ -350,9 +349,67 @@ namespace kagparser
         }
     }
 
+    class KagBlockParser : IKagParser
+    {
+        static public bool IsBlockTag(Dictionary<string, string> cmd)
+        {
+            string tagname = null;
+            cmd.TryGetValue("tagname", out tagname);
+
+            // special case for block content
+            return tagname == "iscript" || tagname == "macro";
+        }
+
+        Dictionary<string, string> _cmd;
+        public KagBlockParser(Dictionary<string, string> cmd)
+        {
+            _cmd = cmd;
+        }
+
+        private Exception ThrowError(string error, string line)
+        {
+            return new Exception(string.Format("KagBlockParser syntax error, {1} in: {0}", line, error));
+        }
+
+        public Dictionary<string, string> Parse(ref string line, StreamReader input)
+        {
+            string tagname = _cmd["tagname"];
+
+            // special case for iscript
+            if(tagname == "iscript")
+                tagname = "script";
+
+            string endtagname = "end" + tagname;
+            string endtagname1 = "@" + endtagname;
+            string endtagname2 = "[" + endtagname + "]";
+
+            bool closed = false;
+            StringBuilder content = new StringBuilder();
+            while(!input.EndOfStream)
+            {
+                string blockline = input.ReadLine();
+                if (blockline == endtagname1 || blockline == endtagname2)
+                {
+                    closed = true;
+                    break;
+                }
+                content.AppendLine(blockline);
+            }
+
+            // check whether we got closed stuff
+            if (!closed)
+                throw new Exception(string.Format("KagBlockParser syntax error, didn't find '{0}' after {1}", endtagname, line));
+
+            line = null;
+            _cmd["tagname"] = "_" + tagname;
+            _cmd[tagname] = content.ToString();
+            return _cmd;
+        }
+    }
+
     class KagAnalyzer
     {
-        public List<object> cmds = new List<object>();
+        public List<Dictionary<string, string>> cmds = new List<Dictionary<string, string>>();
 
         public void Run(StreamReader input)
         {
@@ -360,11 +417,15 @@ namespace kagparser
             while (!input.EndOfStream)
             {
                 IKagParser current = null;
+                bool start = false;
 
-                if(line == null) // whether we need new line
+                if (line == null) // whether we need new line
+                {
                     line = input.ReadLine();
+                    start = true; // whether we read a line from start
+                }
 
-                if (line.Length == 0) // skip empty line
+                if (string.IsNullOrEmpty(line)) // skip empty line
                 {
                     line = null;
                     continue;
@@ -390,7 +451,15 @@ namespace kagparser
                         current = new KagMsgParser();
                         break;
                 }
-                object cmd = current.Parse(ref line, input);
+                Dictionary<string, string> cmd = current.Parse(ref line, input);
+
+                // check block tags
+                if (start && cmd != null && KagBlockParser.IsBlockTag(cmd))
+                {
+                    current = new KagBlockParser(cmd);
+                    cmd = current.Parse(ref line, input);
+                }
+
                 if(cmd != null)
                     cmds.Add(cmd);
             }
@@ -418,10 +487,10 @@ namespace kagparser
 
                 // print the result as krkr format
                 Console.WriteLine("(const) [");
-                foreach (object cmd in analyzer.cmds)
+                foreach (Dictionary<string, string> cmd in analyzer.cmds)
                 {
                     Console.WriteLine("(const) %[");
-                    foreach (KeyValuePair<string, string> kv in (Dictionary<string, string>)cmd)
+                    foreach (KeyValuePair<string, string> kv in cmd)
                     {
                         Console.WriteLine(string.Format("\"{0}\" => \"{1}\",", kv.Key, kv.Value));
                     }
