@@ -16,8 +16,28 @@ namespace kagparser
     {
         public Dictionary<string, string> Parse(ref string line)
         {
+            Dictionary<string, string> cmd = new Dictionary<string, string>();
+
+            string label = line;
+            string pagename = "";
+            int pipe = line.IndexOf("|");
+            string cansave = pipe < 0 ? "false":"true";
+
+            Debug.Assert(pipe != 0);
+            if(pipe >= 0)
+            {
+                label = line.Substring(0, pipe);
+                pipe += 1;
+                pagename = pipe >= line.Length ? "" : line.Substring(pipe);
+            }
+
+            cmd["tagname"] = "_label";
+            cmd["pagename"] = pagename;
+            cmd["cansave"] = cansave;
+            cmd["label"] = label;
+
             line = null;
-            return new Dictionary<string, string>();
+            return cmd;
         }
     }
 
