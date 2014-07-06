@@ -22,7 +22,7 @@ namespace kagparser
             string cansave = pipe < 0 ? "false":"true";
 
             if (pipe == 0)
-                throw new Exception(string.Format("Syntax error in: {0}", line));
+                throw new Exception(string.Format("KagLabelParser syntax error in: {0}", line));
 
             if(pipe > 0)
             {
@@ -44,7 +44,14 @@ namespace kagparser
 
     class KagTagParser : IKagParser
     {
-        static char[] _symbols = new char[] { '=', ' ' };
+        // states
+        string _tagname;
+        string _valuename;
+        bool _equal;
+        bool _address;
+
+        // symbols for kag tag
+        static char[] _symbols = new char[] { '=', ']', '[', '(', ')', '"', '&', ';', ' '};
 
         void MoveCursor(ref string line, int pos)
         {
@@ -56,99 +63,190 @@ namespace kagparser
                 throw new Exception(string.Format("KagTagParser Syntax error, wrong cursor offset {1} in: {0}", line, pos));
         }
 
+        bool IsSymbol(char symbol, char[] symbols)
+        {
+            foreach (char s in symbols)
+            {
+                if (s == symbol)
+                    return true;
+            }
+            return false;
+        }
+
         string ReadToken(ref string line)
         {
+            // if it is empty, do not move cursor, trim later
+            if (line[0] == ' ')
+                return "";
+
             // already trimmed, do not move cursor
             int skippos = 0;
             while (skippos < line.Length)
             {
-                if (line[skippos] == '=' || 
-                    line[skippos] == ' ' ||
-                    line[skippos] == ']' ||
-                    line[skippos] == '"' ||
-                    line[skippos] == '[')
+                if (IsSymbol(line[skippos], _symbols))
                     break;
+
                 skippos++;
             }
 
             return skippos == 0 ? line.Substring(0, 1) : line.Substring(0, skippos);
         }
 
-        string ReadQuote(ref string line)
+        string ReadQuote(ref string line, char lhs)
         {
+            // get the pair quote
+            char rhs = '\"';
+            if (lhs == '(')
+                rhs = ')';
+
+            // already start with a quote
+            Debug.Assert(line[0] == lhs);
+
             // already trimmed, move cursor
             int skippos = 1;
             while (skippos < line.Length)
             {
-                if (line[skippos] == '"')
-                    break;
+                if (line[skippos] == '\\')
+                    skippos++;
+                else if (line[skippos] == rhs)
+                {
+                    string content = line.Substring(1, skippos - 1);
+                    MoveCursor(ref line, skippos + 1);
+                    return content;
+                }
+
                 skippos++;
             }
 
-            string content = line.Substring(1, skippos - 1);
-            MoveCursor(ref line, skippos + 1);
-
-            return content;
+            return null;
         }
 
-        bool TrimLine(ref string line)
+        void Reset()
         {
-            line = line.TrimStart();
-            return string.IsNullOrEmpty(line);
+            _valuename = null;
+            _equal = false;
+            _address = false;
+        }
+
+        void PushValue(Dictionary<string, string> cmd, string content)
+        {
+            cmd[_valuename] = _address ? string.Format("&\"{0}\"", content) : content;
+            Reset();
+        }
+
+        bool IsEnding(ref string line)
+        {
+            string nexttoken = ReadToken(ref line);
+            return (nexttoken == "" || nexttoken == "]" || nexttoken == ";");
+        }
+
+        Exception ThrowError(string error, ref string line)
+        {
+            return new Exception(string.Format("KagTagParser syntax error, {1} in: {0}", line, error));
         }
 
         public Dictionary<string, string> Parse(ref string line)
         {
             Dictionary<string, string> cmd = new Dictionary<string, string>();
-
-            string tagname = null;
-            string valuename = null;
+            
+            _tagname = null;
+            Reset();
 
             bool parsing = true;
             while (parsing)
             {
-                if(TrimLine(ref line))
+                // break if we're done here
+                if(string.IsNullOrEmpty(line))
                     break;
 
                 string token = ReadToken(ref line);
                 switch (token)
                 {
+                    case ";":
+                        if (_tagname[0] != '@' || _address || _equal)
+                            throw ThrowError("isolated comment symbol", ref line);
+
+                        parsing = false;
+                        break;
+
+                    case "": // continues spaces
+                        if (string.IsNullOrEmpty(_tagname))
+                            throw ThrowError("can't find instruction", ref line);
+
+                        if (!string.IsNullOrEmpty(_valuename))
+                        {
+                            Debug.Assert(!_address); // already handled
+                            PushValue(cmd, "1");
+                        }
+
+                        // trim white space
+                        line = line.TrimStart();
+                        break;
+
+                    case "]":
+                        Debug.Assert(!_equal && !_address); // already handled
+                        parsing = false; // KagTagInlineParser need this
+                        break;
+
+                    case "&":
+                        if(!_equal)
+                            throw ThrowError("isolated addressing", ref line);
+
+                        Debug.Assert(!string.IsNullOrEmpty(_valuename)); // already handled
+
+                        _address = true;
+                        MoveCursor(ref line, 1);
+
+                        // syntax sugar for tag=&
+                        if (IsEnding(ref line))
+                        {
+                            line = line.TrimStart();
+                            cmd[_valuename] = token;
+                            Reset();
+                        }
+                        break;
+
                     case "\"":
+                    case "(":
                         // read quoted expression
-                        if (string.IsNullOrEmpty(valuename))
-                            throw new Exception(string.Format("KagTagParser Syntax error, isolated quote in: {0}", line));
+                        if (!_equal)
+                            throw ThrowError("isolated quote", ref line);
 
-                        string content = ReadQuote(ref line);
-                        if (string.IsNullOrEmpty(content))
-                            throw new Exception(string.Format("KagTagParser Syntax error, opened quote in: {0}", line));
+                        if (_address && token == "(")
+                            throw ThrowError("addressing with '('", ref line);
 
-                        cmd[valuename] = content;
-                        valuename = null;
+                        Debug.Assert(!string.IsNullOrEmpty(_valuename));
+
+                        string content = ReadQuote(ref line, token[0]);
+                        if (content == null)
+                            throw ThrowError("opened quote", ref line);
+
+                        PushValue(cmd, content);
                         break;
 
                     case "=":
                         // read expression, move to next
-                        if (string.IsNullOrEmpty(valuename))
-                            throw new Exception(string.Format("KagTagParser Syntax error, no param name in: {0}", line));
+                        if (string.IsNullOrEmpty(_valuename))
+                            throw ThrowError("no param name before '='", ref line);
 
                         MoveCursor(ref line, 1);
-                        break;
 
-                    case "]":
-                        parsing = false; // KagTagInlineParser need this
+                        if (IsEnding(ref line))
+                            throw ThrowError("expecting value after '='", ref line);
+
+                        _equal = true;
                         break;
 
                     default:// symbol
                         {
-                            if (tagname == null)
-                                tagname = token;
-                            else if (!string.IsNullOrEmpty(valuename))
-                            {
-                                cmd[valuename] = token;
-                                valuename = null;
-                            }
+                            if(_address)
+                                throw ThrowError("addressing with symbol", ref line);
+                            else if (_tagname == null)
+                                _tagname = token;
+                            else if (!string.IsNullOrEmpty(_valuename))
+                                PushValue(cmd, token);
                             else
-                                valuename = token;
+                                _valuename = token;
 
                             MoveCursor(ref line, token.Length);
                         }
@@ -156,12 +254,13 @@ namespace kagparser
                 }
             }
 
-            if(string.IsNullOrEmpty(tagname))
-                throw new Exception(string.Format("KagTagParser Syntax error, no tagname in: {0}", line));
+            if(string.IsNullOrEmpty(_tagname))
+                throw ThrowError("no tagname", ref line);
 
-            if (tagname.StartsWith("@"))
-                tagname = tagname.Substring(1);
-            cmd["tagname"] = tagname;
+            if (_tagname.StartsWith("@"))
+                _tagname = _tagname.Substring(1);
+
+            cmd["tagname"] = _tagname;
 
             if (line == "")
                 line = null;
@@ -174,13 +273,13 @@ namespace kagparser
     {
         public Dictionary<string, string> Parse(ref string line)
         {
-            line = line.Substring(1); // ignore the 1st char
+            line = line.Substring(1).TrimStart(); // ignore the 1st char and the spaces
 
             IKagParser parser = new KagTagParser();
             Dictionary<string, string> cmd = parser.Parse(ref line);
 
             if (line[0] != ']') // ignore the last character
-                throw new Exception(string.Format("KagTagInlineParser Syntax error in: {0}", line));
+                throw new Exception(string.Format("KagTagInlineParser syntax error in: {0}", line));
 
             line = line.Substring(1);
             return cmd;
@@ -193,7 +292,7 @@ namespace kagparser
         {
             int tag = line.IndexOf('[');
             if (tag == 0)
-                throw new Exception(string.Format("KagMsgParser Syntax error in: {0}", line));
+                throw new Exception(string.Format("KagMsgParser syntax error in: {0}", line));
 
             string msg = line;
             if (tag >= 0)
