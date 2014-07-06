@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -8,59 +9,80 @@ namespace kagparser
 {
     interface IKagParser
     {
-        public Dictionary<string, string> Parse(string line);
+        Dictionary<string, string> Parse(ref string line);
     }
 
     class KagLabelParser : IKagParser
     {
-        public Dictionary<string, string> Parse(string line)
+        public Dictionary<string, string> Parse(ref string line)
         {
-            throw new NotImplementedException();
+            line = null;
+            return new Dictionary<string, string>();
         }
     }
 
     class KagTagParser : IKagParser
     {
-        public Dictionary<string, string> Parse(string line)
+        public Dictionary<string, string> Parse(ref string line)
         {
-            throw new NotImplementedException();
+            line = null;
+            return new Dictionary<string, string>();
         }
     }
 
     class KagTagInlineParser : IKagParser
     {
-        public Dictionary<string, string> Parse(string line)
+        public Dictionary<string, string> Parse(ref string line)
         {
-            throw new NotImplementedException();
+            return new Dictionary<string, string>();
         }
     }
 
     class KagMsgParser : IKagParser
     {
-        public Dictionary<string, string> Parse(string line)
+        public Dictionary<string, string> Parse(ref string line)
         {
-            throw new NotImplementedException();
+            int tag = line.IndexOf('[');
+            Debug.Assert(tag != 0);
+
+            string msg = line;
+            if (tag >= 0)
+            {
+                msg = line.Substring(0, tag);
+                line = line.Substring(tag);
+            }
+
+            Dictionary<string, string> cmd = new Dictionary<string, string>();
+            cmd["tagname"] = "_msg";
+            cmd["text"] = msg;
+            return cmd;
         }
     }
 
     class KagCommentParser : IKagParser
     {
-        public Dictionary<string, string> Parse(string line)
+        public Dictionary<string, string> Parse(ref string line)
         {
-            throw new NotImplementedException();
+            // ignore
+            line = null;
+            return null;
         }
     }
 
     class KagAnalyzer
     {
-        public List<object> cmds;
+        public List<object> cmds = new List<object>();
 
         public void Run(StreamReader input)
         {
+            string line = null;
             while (!input.EndOfStream)
             {
                 IKagParser current = null;
-                string line = input.ReadLine();
+
+                if(line == null) // whether we need new line
+                    line = input.ReadLine();
+
                 if(line.Length == 0) // skip empty line
                     continue;
 
@@ -84,8 +106,9 @@ namespace kagparser
                         current = new KagMsgParser();
                         break;
                 }
-                object cmd = current.Parse(line);
-                cmds.Add(cmd);
+                object cmd = current.Parse(ref line);
+                if(cmd != null)
+                    cmds.Add(cmd);
             }
         }
     }
