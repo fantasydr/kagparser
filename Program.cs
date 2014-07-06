@@ -11,23 +11,29 @@ namespace KagParser
     {
         static void Main(string[] args)
         {
-            using (StreamReader sr = new StreamReader(args[0]))
+            if (args.Length < 1)
             {
-                KagParser parser = new KagParser();
+                Console.WriteLine("1st param is the input ks file.");
+                return;
+            }
 
-                // parse the input
-                try
+            KagParser parser = new KagParser();
+
+            // parse the input
+            try
+            {
+                using (StreamReader sr = new StreamReader(args[0]))
                 {
                     parser.Run(sr);
                 }
-                catch (System.Exception ex)
-                {
-                    Console.WriteLine("[Error]");
-                    Console.WriteLine(ex.Message);
-                }
-
-                parser.OutputKRKR();
             }
+            catch (System.Exception ex)
+            {
+                Console.WriteLine("[Error]");
+                Console.WriteLine(ex.Message);
+            }
+            
+            parser.OutputKRKR();
         }
     }
 }
